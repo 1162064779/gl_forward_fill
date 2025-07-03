@@ -1,0 +1,46 @@
+# Build directories
+build/
+out/
+Debug/
+Release/
+x64/
+
+# vcpkg project-private dependencies
+vcpkg_installed/
+
+# Generated files
+openglLeft.png
+openglRight.png
+
+# IDE files
+.vs/
+.vscode/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Temporary files
+*.tmp
+*.log
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db 

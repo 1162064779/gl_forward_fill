@@ -1,0 +1,39 @@
+#version 430
+layout(local_size_x = 256) in;
+layout(binding = 2, rgba8)  uniform coherent image2D  imgColor;
+layout(binding = 4, r32ui)  uniform coherent uimage2D imgIndex;
+layout(binding = 5, rgba32ui) uniform coherent uimage2D edgeTex;
+
+uniform int orgWidth;
+uniform int orgHeight;
+uniform int numTile;
+const uint UUNDEF = 0xFFFFFFFFu;
+
+void main(){
+    uint y = gl_GlobalInvocationID.y;
+    if(y>=uint(orgHeight)) return;
+
+    uvec4 last = uvec4(0, UUNDEF,0,0);
+    for(int t=0; t<numTile; ++t){
+        uvec4 leftEdge = imageLoad(edgeTex, ivec2(t*2  , int(y)));
+        uvec4 rightEdge= imageLoad(edgeTex, ivec2(t*2+1, int(y)));
+
+        if(last.y==UUNDEF && leftEdge.y!=UUNDEF){
+            last = leftEdge;
+        }
+        if(last.y!=UUNDEF && leftEdge.y==UUNDEF){
+            int start = t*256;
+            int end   = min(start+256, orgWidth);
+            for(int x=start; x<end; ++x){
+                uint idx = imageLoad(imgIndex, ivec2(x,int(y))).x;
+                if(idx==UUNDEF){
+                    imageStore(imgColor, ivec2(x,int(y)),
+                               vec4(uintBitsToFloat(last.x)));
+                    imageStore(imgIndex, ivec2(x,int(y)),
+                               uvec4(last.y,0,0,0));
+                }
+            }
+        }
+        if(rightEdge.y!=UUNDEF) last = rightEdge;
+    }
+} 

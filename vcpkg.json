@@ -1,0 +1,25 @@
+{
+  "name": "opengl-stereo-generator",
+  "version": "1.0.0",
+  "description": "OpenGL Stereo Image Generator using depth maps",
+  "homepage": "https://github.com/your-username/opengl-stereo-generator",
+  "dependencies": [
+    {
+      "name": "glfw3",
+      "platform": "windows"
+    },
+    {
+      "name": "glad",
+      "platform": "windows"
+    },
+    {
+      "name": "tinyexr",
+      "platform": "windows"
+    },
+    {
+      "name": "stb",
+      "platform": "windows"
+    }
+  ],
+  "builtin-baseline": "f5ec6f30ff70f04f841436a0f36600bdbabfcfbf"
+} 
