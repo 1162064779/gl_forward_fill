@@ -1,0 +1,97 @@
+#version 320 es
+
+/* ② ES 里必须显式声明默认精度，否则很多类型默认是 mediump */
+precision highp float;
+precision highp int;
+precision highp uint;
+
+/* ------------------------------------------------------------
+   计算工作组尺寸
+   ------------------------------------------------------------ */
+layout(local_size_x = 16, local_size_y = 16) in;
+
+/* ------------------------------------------------------------
+   输入：sampler 一样可以绑到 binding 位
+   必须加精度限定，如 highp sampler2D
+   ------------------------------------------------------------ */
+layout(binding = 0) uniform highp sampler2D srcColor;
+layout(binding = 1) uniform highp sampler2D srcDepth;
+
+/* ------------------------------------------------------------
+   输出 image：在 ES 3.1 中仍然支持 rgba8 / r32ui 等格式，
+   coherent / writeonly 等限定符也可用
+   ------------------------------------------------------------ */
+layout(binding = 2, rgba8)  writeonly  uniform highp image2D  dstColor;
+layout(binding = 3, r32ui)  coherent   uniform highp uimage2D dstDepth;
+layout(binding = 4, r32ui)  coherent   uniform highp uimage2D dstIndex;
+
+/* ------------------------------------------------------------
+   uniform
+   ------------------------------------------------------------ */
+uniform int   orgWidth;
+uniform int   orgHeight;
+uniform int   padSize;            // 复制边缘宽度
+uniform int   paddedWidth;        // = orgWidth + 2*padSize
+uniform float shiftScale;         // k
+uniform float shiftBias;          // b
+
+/* ------------------------------------------------------------
+   工具：归一化深度 → uint32，供 imageAtomicMax 使用
+   ③ 4 294 967 295 在 32-bit float 中仍可准确到个位数，
+     但为了保险，这里写成 4294967295.0f
+   ------------------------------------------------------------ */
+uint encodeDepth(highp float d)
+{
+    return uint(clamp(d, 0.0, 1.0) * 4294967295.0f);
+}
+
+/* ------------------------------------------------------------
+   写出一或两像素（与桌面版逻辑一致）
+   ------------------------------------------------------------ */
+void tryWrite(ivec2 paddedPos, vec4 c, uint d, uint idx)
+{
+    /* 1) 过滤左右 pad —— 保留中段 */
+    if (paddedPos.x < padSize || paddedPos.x >= padSize + orgWidth)
+        return;
+
+    /* 2) 去掉 padSize 偏移，映射到 [0, orgWidth-1] */
+    ivec2 dstPos = ivec2(paddedPos.x - padSize, paddedPos.y);
+
+    /* 3) 深度竞争 + 条件写入 */
+    uint old = imageAtomicMax(dstDepth, dstPos, d);
+    if (d > old)
+    {
+        imageStore(dstColor, dstPos, vec4(c.rgb, 1.0));
+        imageStore(dstIndex, dstPos, uvec4(idx, 0u, 0u, 0u));
+    }
+}
+
+/* ------------------------------------------------------------
+   主函数
+   ------------------------------------------------------------ */
+void main()
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= paddedWidth || gid.y >= orgHeight) return;
+
+    /* --- replication pad：把 gid.x 拉回源纹理有效范围 --- */
+    int srcX = clamp(gid.x - padSize,                         // 去掉左 pad
+                     0, orgWidth - 1);                        // 再夹到 [0, W-1]
+
+    /* ④ texelFetch 在 ES 3.1+ 依然可用，语义与桌面相同 */
+    vec4  C = texelFetch(srcColor, ivec2(srcX, gid.y), 0);
+    float Z = texelFetch(srcDepth, ivec2(srcX, gid.y), 0).r;
+
+    /* --- 平移量 (disp) 计算 --- */
+    float disp   = Z * shiftScale + shiftBias;
+    float xPrime = float(gid.x) + disp;
+    int   xFloor = int(floor(xPrime));
+
+    /* --- 深度编码 + index --- */
+    uint dEnc = encodeDepth(Z);
+    uint idx  = uint(srcX);
+
+    /* --- 写两格（floor 与 floor+1）--- */
+    tryWrite(ivec2(xFloor    , gid.y), C, dEnc, idx);
+    tryWrite(ivec2(xFloor + 1, gid.y), C, dEnc, idx);
+}

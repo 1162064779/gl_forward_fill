@@ -1,0 +1,64 @@
+#version 320 es
+precision highp float;
+precision highp int;
+precision highp uint;
+
+/* ------------------------------------------------------------ */
+layout(local_size_x = 256) in;
+
+/* ------------------------------------------------------------ */
+/* 输入 / 输出绑定                                               */
+/* ------------------------------------------------------------ */
+layout(binding = 2, rgba8  )  writeonly coherent uniform highp image2D  imgColor;
+layout(binding = 4, r32ui  )            coherent uniform highp uimage2D imgIndex;
+layout(binding = 5, rgba32ui) readonly  coherent uniform highp uimage2D edgeTex;
+
+/* ------------------------------------------------------------ */
+uniform int orgWidth;
+uniform int orgHeight;
+uniform int numTile;
+
+const uint UUNDEF = 0xFFFFFFFFu;
+
+/* ------------------------------------------------------------ */
+void main()
+{
+    uint y = gl_GlobalInvocationID.y;
+    if (y >= uint(orgHeight)) return;
+
+    uvec4 last = uvec4(0u, UUNDEF, 0u, 0u);   // (colorBits, index, -, -)
+
+    for (int t = 0; t < numTile; ++t)
+    {
+        /* edgeTex：每 tile 两像素 (左/右) */
+        uvec4 leftEdge  = imageLoad(edgeTex, ivec2(t * 2    , int(y)));
+        uvec4 rightEdge = imageLoad(edgeTex, ivec2(t * 2 + 1, int(y)));
+
+        /* ① 接管 baseline */
+        if (last.y == UUNDEF && leftEdge.y != UUNDEF)
+            last = leftEdge;
+
+        /* ② 填充洞 */
+        if (last.y != UUNDEF && leftEdge.y == UUNDEF)
+        {
+            int start = t * 256;
+            int end   = min(start + 256, orgWidth);
+
+            for (int x = start; x < end; ++x)
+            {
+                uint idx = imageLoad(imgIndex, ivec2(x, int(y))).x;
+                if (idx == UUNDEF)
+                {
+                    imageStore(imgColor, ivec2(x, int(y)),
+                               vec4(uintBitsToFloat(last.x)));
+                    imageStore(imgIndex, ivec2(x, int(y)),
+                               uvec4(last.y, 0u, 0u, 0u));
+                }
+            }
+        }
+
+        /* ③ 更新 baseline */
+        if (rightEdge.y != UUNDEF)
+            last = rightEdge;
+    }
+}

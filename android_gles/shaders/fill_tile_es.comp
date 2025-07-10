@@ -1,0 +1,144 @@
+#version 320 es
+//第一行不能写注释，不然会被一些gles视为错误的版本
+/* ------------------------------------------------------------ */
+/* 默认精度                                                     */
+/* ------------------------------------------------------------ */
+precision highp float;
+precision highp int;
+precision highp uint;
+
+/* ------------------------------------------------------------ */
+layout(local_size_x = 256) in;      // 每个 work-group 256 线程
+
+/* ------------------------------------------------------------ */
+/* image 绑定                                                    */
+/* ------------------------------------------------------------ */
+/* 颜色贴图：同一张纹理绑定两次                                 */
+//这样做的目的是因为在一些安卓机子上，rgba格式的数据（rgba8，rgba32）只能声明为read或者write，不能同时读写。
+//一些安卓机子上，这样的写法虽然可以通过编译，但是先执行了读操作，再执行写操作，会导致写操作失效。
+layout(binding = 2, rgba8)  writeonly coherent uniform highp image2D  imgColorW; // 写
+layout(binding = 6, rgba8)  readonly  coherent uniform highp image2D  imgColorR; // 读
+
+/* 索引贴图：r32ui 可合法读+写                                  */
+layout(binding = 4, r32ui)           coherent uniform highp uimage2D imgIndex;
+
+/* 边缘输出：只写                                               */
+layout(binding = 5, rgba32ui) writeonly coherent uniform highp uimage2D edgeTex;
+
+/* ------------------------------------------------------------ */
+uniform int orgWidth;
+uniform int orgHeight;
+uniform int eyeSign;          // +1 左眼，-1 右眼
+
+const uint UUNDEF = 0xFFFFFFFFu;
+
+/* ------------------------------------------------------------ */
+/* 组内共享内存                                                 */
+/* ------------------------------------------------------------ */
+shared vec4 sColor[256];
+shared uint sIndex[256];
+
+/* ------------------------------------------------------------ */
+/* 交替方向空洞填充                                             */
+/* ------------------------------------------------------------ */
+void shift_fill_tile(int width)
+{
+    for (int it = 0; it < width; ++it)
+    {
+        if (sIndex[gl_LocalInvocationID.x] == UUNDEF)
+        {
+            bool takeRight = ((it & 1) == 0);      // 偶数轮→右
+            int  x         = int(gl_LocalInvocationID.x);
+
+            bool leftValid  = (x > 0)        && (sIndex[x-1] != UUNDEF);
+            bool rightValid = (x < width-1)  && (sIndex[x+1] != UUNDEF);
+
+            if ( takeRight && rightValid )
+            {
+                sColor[x] = sColor[x+1];
+                sIndex[x] = sIndex[x+1];
+            }
+            else if ( !takeRight && leftValid )
+            {
+                sColor[x] = sColor[x-1];
+                sIndex[x] = sIndex[x-1];
+            }
+        }
+        barrier();
+    }
+}
+
+/* ------------------------------------------------------------ */
+void main()
+{
+    uint tileX = gl_WorkGroupID.x * 256u;
+    uint x     = gl_LocalInvocationID.x;
+    uint y     = gl_WorkGroupID.y;
+
+    if (y >= uint(orgHeight)) return;
+
+    uint col    = tileX + x;
+    bool inside = col < uint(orgWidth);
+
+    /* ---------- 将全局像素拉到共享内存 ----------------------- */
+    if (inside)
+    {
+        sColor[x] = imageLoad(imgColorR, ivec2(int(col), int(y)));
+        sIndex[x] = imageLoad(imgIndex , ivec2(int(col), int(y))).x;
+    }
+    else
+    {
+        sColor[x] = vec4(0.0);
+        sIndex[x] = UUNDEF;
+    }
+    barrier();
+
+    int w = min(256, orgWidth - int(tileX));
+
+    /* 第一次填充 */
+    shift_fill_tile(w);
+
+    /* ----------- 索引顺序修复 ------------------------------- */
+    int  xi  = int(x);
+    bool bad = false;
+
+    if (xi < w)
+    {
+        if (eyeSign > 0 && xi < w - 1)       // 左眼：递增
+            bad = (sIndex[xi]   != UUNDEF &&
+                   sIndex[xi+1] != UUNDEF &&
+                   sIndex[xi] >  sIndex[xi+1]);
+
+        else if (eyeSign < 0 && xi > 0)      // 右眼：递减
+            bad = (sIndex[xi-1] != UUNDEF &&
+                   sIndex[xi]   != UUNDEF &&
+                   sIndex[xi-1] > sIndex[xi]);
+    }
+    if (bad) sIndex[xi] = UUNDEF;
+    barrier();
+
+    /* 第二次填充 */
+    shift_fill_tile(w);
+
+    /* ---------- 写回全局纹理 --------------------------------- */
+    if (inside)
+    {
+        imageStore(imgColorW, ivec2(int(col), int(y)), sColor[x]);
+        imageStore(imgIndex , ivec2(int(col), int(y)),
+                   uvec4(sIndex[x], 0u, 0u, 0u));
+    }
+
+    /* ---------- 记录瓦片左右边缘 ----------------------------- */
+    if (x == 0u)
+    {
+        imageStore(edgeTex,
+                   ivec2(int(tileX / 256u * 2u), int(y)),
+                   uvec4(floatBitsToUint(sColor[0].x), sIndex[0], 0u, 0u));
+    }
+    if (x == uint(w - 1))
+    {
+        imageStore(edgeTex,
+                   ivec2(int(tileX / 256u * 2u + 1u), int(y)),
+                   uvec4(floatBitsToUint(sColor[xi].x), sIndex[xi], 0u, 0u));
+    }
+}
