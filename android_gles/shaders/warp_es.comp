@@ -91,7 +91,9 @@ void main()
     uint dEnc = encodeDepth(Z);
     uint idx  = uint(srcX);
 
-    /* --- 写两格（floor 与 floor+1）--- */
-    tryWrite(ivec2(xFloor    , gid.y), C, dEnc, idx);
-    tryWrite(ivec2(xFloor + 1, gid.y), C, dEnc, idx);
+   float fracPart = fract(xPrime);
+   tryWrite(ivec2(xFloor, gid.y), C, dEnc, idx);
+   if (fracPart > 0.001){
+      tryWrite(ivec2(xFloor+1, gid.y), C, dEnc, idx);
+   }
 }

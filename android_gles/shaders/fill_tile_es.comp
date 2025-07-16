@@ -1,144 +1,191 @@
 #version 320 es
-//第一行不能写注释，不然会被一些gles视为错误的版本
-/* ------------------------------------------------------------ */
-/* 默认精度                                                     */
-/* ------------------------------------------------------------ */
+// ------------------------------------------------------------
+// 默认精度
+// ------------------------------------------------------------
 precision highp float;
 precision highp int;
 precision highp uint;
 
-/* ------------------------------------------------------------ */
-layout(local_size_x = 256) in;      // 每个 work-group 256 线程
+// ------------------------------------------------------------
+// 线程布局
+// ------------------------------------------------------------
+layout(local_size_x = 256) in;
+const uint TILE   = 256u;  // ← 变成 uint   // = local_size_x
+const uint shift_len = 16u;
 
-/* ------------------------------------------------------------ */
-/* image 绑定                                                    */
-/* ------------------------------------------------------------ */
-/* 颜色贴图：同一张纹理绑定两次                                 */
+// ------------------------------------------------------------
+// image 绑定
+// ------------------------------------------------------------
+// 颜色贴图：同一张纹理绑定两次                                 
 //这样做的目的是因为在一些安卓机子上，rgba格式的数据（rgba8，rgba32）只能声明为read或者write，不能同时读写。
 //一些安卓机子上，这样的写法虽然可以通过编译，但是先执行了读操作，再执行写操作，会导致写操作失效。
-layout(binding = 2, rgba8)  writeonly coherent uniform highp image2D  imgColorW; // 写
-layout(binding = 6, rgba8)  readonly  coherent uniform highp image2D  imgColorR; // 读
+layout(binding = 6, rgba8) readonly  uniform highp image2D imgColorR; // 读
+layout(binding = 2, rgba8) writeonly uniform highp image2D imgColorW; // 写
+layout(binding = 4, r32ui)          uniform highp uimage2D imgIndex;  // 读+写
 
-/* 索引贴图：r32ui 可合法读+写                                  */
-layout(binding = 4, r32ui)           coherent uniform highp uimage2D imgIndex;
-
-/* 边缘输出：只写                                               */
-layout(binding = 5, rgba32ui) writeonly coherent uniform highp uimage2D edgeTex;
-
-/* ------------------------------------------------------------ */
+// ------------------------------------------------------------
 uniform int orgWidth;
 uniform int orgHeight;
-uniform int eyeSign;          // +1 左眼，-1 右眼
+uniform int  eyeSign;   // +1 = 左眼(递增), -1 = 右眼(递减)
 
 const uint UUNDEF = 0xFFFFFFFFu;
+const uint INF_DIST = 0xFFFFu;
 
-/* ------------------------------------------------------------ */
-/* 组内共享内存                                                 */
-/* ------------------------------------------------------------ */
-shared vec4 sColor[256];
-shared uint sIndex[256];
+// ------------------------------------------------------------
+// 共享内存
+// ------------------------------------------------------------
+shared vec4 sColorL[TILE], sColorR[TILE];   // “取最近左值/右值” 得到的颜色
+shared uint sIndexL[TILE], sIndexR[TILE];   // 对应索引
+shared uint sDistL[TILE],  sDistR[TILE];    // 离最近左/右有效像素的距离
 
-/* ------------------------------------------------------------ */
-/* 交替方向空洞填充                                             */
-/* ------------------------------------------------------------ */
-void shift_fill_tile(int width)
+// ------------------------------------------------------------
+// 左向指数扩散：读取 x-stride 的状态来更新 x
+// ------------------------------------------------------------
+void propagateLeft(int W, int shift_w)
 {
-    for (int it = 0; it < width; ++it)
+    for (int stride = 1; stride < shift_w; stride <<= 1)
     {
-        if (sIndex[gl_LocalInvocationID.x] == UUNDEF)
+        uint x = gl_LocalInvocationID.x;
+
+        if (x >= uint(stride) && sIndexL[x] == UUNDEF)
         {
-            bool takeRight = ((it & 1) == 0);      // 偶数轮→右
-            int  x         = int(gl_LocalInvocationID.x);
-
-            bool leftValid  = (x > 0)        && (sIndex[x-1] != UUNDEF);
-            bool rightValid = (x < width-1)  && (sIndex[x+1] != UUNDEF);
-
-            if ( takeRight && rightValid )
+            uint srcIdx  = sIndexL[x - uint(stride)];
+            if (srcIdx != UUNDEF)
             {
-                sColor[x] = sColor[x+1];
-                sIndex[x] = sIndex[x+1];
+                uint candDist = sDistL[x - uint(stride)] + uint(stride);
+                if (candDist < sDistL[x])               // 更近 → 覆盖
+                {
+                    sIndexL[x] = srcIdx;
+                    sColorL[x] = sColorL[x - uint(stride)];
+                    sDistL [x] = candDist;
+                }
             }
-            else if ( !takeRight && leftValid )
+        }
+        barrier();                                      // 写完后同步
+    }
+}
+
+// ------------------------------------------------------------
+// 右向指数扩散：读取 x+stride 的状态来更新 x
+// ------------------------------------------------------------
+void propagateRight(int W, int shift_w)
+{
+    for (int stride = 1; stride < shift_w; stride <<= 1)
+    {
+        uint x = gl_LocalInvocationID.x;
+
+        if (x + uint(stride) < uint(W) && sIndexR[x] == UUNDEF)
+        {
+            uint srcIdx  = sIndexR[x + uint(stride)];
+            if (srcIdx != UUNDEF)
             {
-                sColor[x] = sColor[x-1];
-                sIndex[x] = sIndex[x-1];
+                uint candDist = sDistR[x + uint(stride)] + uint(stride);
+                if (candDist < sDistR[x])
+                {
+                    sIndexR[x] = srcIdx;
+                    sColorR[x] = sColorR[x + uint(stride)];
+                    sDistR [x] = candDist;
+                }
             }
         }
         barrier();
     }
 }
 
-/* ------------------------------------------------------------ */
+// ------------------------------------------------------------
 void main()
 {
-    uint tileX = gl_WorkGroupID.x * 256u;
-    uint x     = gl_LocalInvocationID.x;
-    uint y     = gl_WorkGroupID.y;
-
+    uint xLocal = gl_LocalInvocationID.x;       
+    uint y      = gl_WorkGroupID.y;
     if (y >= uint(orgHeight)) return;
 
-    uint col    = tileX + x;
+    // 当前 tile 覆盖的像素列范围
+    uint tileX  = gl_WorkGroupID.x * TILE;
+    uint col    = tileX + xLocal;
     bool inside = col < uint(orgWidth);
 
-    /* ---------- 将全局像素拉到共享内存 ----------------------- */
+    // ---------- 读入全局像素 ----------------------------------------
+    vec4  C = vec4(0.0);
+    uint  I = UUNDEF;
+
     if (inside)
     {
-        sColor[x] = imageLoad(imgColorR, ivec2(int(col), int(y)));
-        sIndex[x] = imageLoad(imgIndex , ivec2(int(col), int(y))).x;
+        C = imageLoad(imgColorR, ivec2(int(col), int(y)));
+        I = imageLoad(imgIndex , ivec2(int(col), int(y))).x;
     }
-    else
-    {
-        sColor[x] = vec4(0.0);
-        sIndex[x] = UUNDEF;
-    }
+
+    sColorL[xLocal] = C;  sColorR[xLocal] = C;
+    sIndexL[xLocal] = I;  sIndexR[xLocal] = I;
+    sDistL [xLocal] = (I != UUNDEF) ? 0u : INF_DIST;
+    sDistR [xLocal] = (I != UUNDEF) ? 0u : INF_DIST;
     barrier();
 
-    int w = min(256, orgWidth - int(tileX));
+    // 本 tile 实际要处理的列数（≤20 且 ≤ TILE）
+    int W = min(int(TILE), orgWidth - int(tileX));
+    int shift_w = min(int(shift_len), orgWidth - int(tileX));
 
-    /* 第一次填充 */
-    shift_fill_tile(w);
+/* ---------- 第一次 Shift-Fill ---------- */
+    propagateRight(W,shift_w);      // 先右
+    propagateLeft (W,shift_w);      // 再左
 
-    /* ----------- 索引顺序修复 ------------------------------- */
-    int  xi  = int(x);
-    bool bad = false;
-
-    if (xi < w)
-    {
-        if (eyeSign > 0 && xi < w - 1)       // 左眼：递增
-            bad = (sIndex[xi]   != UUNDEF &&
-                   sIndex[xi+1] != UUNDEF &&
-                   sIndex[xi] >  sIndex[xi+1]);
-
-        else if (eyeSign < 0 && xi > 0)      // 右眼：递减
-            bad = (sIndex[xi-1] != UUNDEF &&
-                   sIndex[xi]   != UUNDEF &&
-                   sIndex[xi-1] > sIndex[xi]);
+    /* ---------- 选 winner (等距右优先) ---------- */
+    uint finalIdx;
+    vec4 finalCol;
+    if (sDistR[xLocal] <= sDistL[xLocal]) {
+        finalIdx = sIndexR[xLocal];
+        finalCol = sColorR[xLocal];
+    } else {
+        finalIdx = sIndexL[xLocal];
+        finalCol = sColorL[xLocal];
     }
-    if (bad) sIndex[xi] = UUNDEF;
-    barrier();
 
-    /* 第二次填充 */
-    shift_fill_tile(w);
+    // /* ---------- 把第一次结果写回共享数组 ---------- */
+    // sIndexL[xLocal] = sIndexR[xLocal] = finalIdx;
+    // sColorL[xLocal] = sColorR[xLocal] = finalCol;
+    // sDistL [xLocal] = sDistR [xLocal] = (finalIdx != UUNDEF) ? 0u : INF_DIST;
+    // barrier();
 
-    /* ---------- 写回全局纹理 --------------------------------- */
+    // /* ---------- 索引顺序检测 / 挖洞 ---------- */
+    // if (int(xLocal) < W)
+    // {
+    //     bool bad = false;
+    //     if (eyeSign > 0) {                 // 左眼 : 递增
+    //         if (int(xLocal) < W - 1) {
+    //             uint a = sIndexL[xLocal];
+    //             uint b = sIndexL[xLocal + 1u];
+    //             bad = (a != UUNDEF && b != UUNDEF && a > b);
+    //         }
+    //     } else if (eyeSign < 0) {          // 右眼 : 递减
+    //         if (xLocal > 0u) {
+    //             uint a = sIndexL[xLocal - 1u];
+    //             uint b = sIndexL[xLocal];
+    //             bad = (a != UUNDEF && b != UUNDEF && a > b);
+    //         }
+    //     }
+    //     if (bad) {
+    //         sIndexL[xLocal] = sIndexR[xLocal] = UUNDEF;
+    //         sDistL [xLocal] = sDistR [xLocal] = INF_DIST;
+    //     }
+    // }
+    // barrier();
+
+    // /* ---------- 第二次 Shift-Fill ---------- */
+    // propagateRight(W,shift_w);
+    // propagateLeft (W,shift_w);
+
+    // if (sDistR[xLocal] <= sDistL[xLocal]) {
+    //     finalIdx = sIndexR[xLocal];
+    //     finalCol = sColorR[xLocal];
+    // } else {
+    //     finalIdx = sIndexL[xLocal];
+    //     finalCol = sColorL[xLocal];
+    // }
+
+    /* ---------- 写回到图像 ---------- */
     if (inside)
     {
-        imageStore(imgColorW, ivec2(int(col), int(y)), sColor[x]);
+        imageStore(imgColorW, ivec2(int(col), int(y)), finalCol);
         imageStore(imgIndex , ivec2(int(col), int(y)),
-                   uvec4(sIndex[x], 0u, 0u, 0u));
-    }
-
-    /* ---------- 记录瓦片左右边缘 ----------------------------- */
-    if (x == 0u)
-    {
-        imageStore(edgeTex,
-                   ivec2(int(tileX / 256u * 2u), int(y)),
-                   uvec4(floatBitsToUint(sColor[0].x), sIndex[0], 0u, 0u));
-    }
-    if (x == uint(w - 1))
-    {
-        imageStore(edgeTex,
-                   ivec2(int(tileX / 256u * 2u + 1u), int(y)),
-                   uvec4(floatBitsToUint(sColor[xi].x), sIndex[xi], 0u, 0u));
+                   uvec4(finalIdx, 0u, 0u, 0u));
     }
 }

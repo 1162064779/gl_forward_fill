@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 设置源文件
 set(SOURCES
-    main.cpp
+    offscreen_main.cpp
 )
 
 # 创建可执行文件

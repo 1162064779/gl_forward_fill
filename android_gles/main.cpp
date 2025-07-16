@@ -9,20 +9,13 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <chrono>
 
 // Android日志宏
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "xptest", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "xptest", __VA_ARGS__)
 
-// OpenGL错误检查宏
-#define CHECK() \
-{\
-    GLenum err = glGetError(); \
-    if (err != GL_NO_ERROR) \
-    {\
-        LOGE("glGetError returns %d at %s:%d", err, __FILE__, __LINE__); \
-    }\
-}
+using namespace std::chrono;
 
 // STB和TINYEXR实现定义
 #define STB_IMAGE_IMPLEMENTATION
@@ -56,10 +49,6 @@ struct WarpUniforms {
 struct TileUniforms {
     GLint orgWidth, orgHeight, eyeSign;
 } tileU;
-
-struct PrefixUniforms {
-    GLint orgWidth, orgHeight, numTile;
-} prefixU;
 
 // 着色器编译函数
 GLuint compileShader(GLenum type, const std::string &source) {
@@ -450,8 +439,57 @@ std::string loadFileTest(const char *path)
     return code;
 }
 
+inline void clearTextureRGBA8 (GLuint tex, uint8_t  r, uint8_t  g,
+    uint8_t  b, uint8_t  a = 0)
+{
+static GLuint sFBO = 0;
+if (!sFBO) glGenFramebuffers(1, &sFBO);
+
+const GLfloat v[4] = { r / 255.f, g / 255.f, b / 255.f, a / 255.f };
+
+glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+GL_TEXTURE_2D, tex, 0);
+
+glClearBufferfv(GL_COLOR, 0, v);
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+inline void clearTextureR32UI(GLuint tex, uint32_t value)
+{
+static GLuint sFBO = 0;
+if (!sFBO) glGenFramebuffers(1, &sFBO);
+
+const GLuint v[4] = { value, 0u, 0u, 0u };
+
+glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+GL_TEXTURE_2D, tex, 0);
+
+glClearBufferuiv(GL_COLOR, 0, v);
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+inline void clearTextureRGBA32UI(GLuint tex,
+      uint32_t r, uint32_t g,
+      uint32_t b, uint32_t a = 0)
+{
+static GLuint sFBO = 0;
+if (!sFBO) glGenFramebuffers(1, &sFBO);
+
+const GLuint v[4] = { r, g, b, a };
+
+glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+GL_TEXTURE_2D, tex, 0);
+
+glClearBufferuiv(GL_COLOR, 0, v);
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 // 主函数
 int main() {
+    auto startTime = steady_clock::now();
     LOGI("xptest: Starting OpenGL ES Stereo Generator");
 
     // 初始化EGL
@@ -477,17 +515,21 @@ int main() {
         return -1;
     }
 
+
+
     // 查询硬件支持的计算着色器上限
-    GLint maxWGCount[3], maxWGSize[3];
+    GLint maxWGCount[3], maxWGSize[3], maxWGInvoc;
     glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, &maxWGCount[0]);
     glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 1, &maxWGCount[1]);
     glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2, &maxWGCount[2]);
     glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0, &maxWGSize[0]);
     glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1, &maxWGSize[1]);
     glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2, &maxWGSize[2]);
-    
-    LOGI("xptest: Max work group count: %d x %d x %d", maxWGCount[0], maxWGCount[1], maxWGCount[2]);
-    LOGI("xptest: Max work group size: %d x %d x %d", maxWGSize[0], maxWGSize[1], maxWGSize[2]);
+    glGetIntegerv (GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, &maxWGInvoc);
+
+    LOGI("xptest: Max work group  count: %d x %d x %d", maxWGCount[0], maxWGCount[1], maxWGCount[2]);
+    LOGI("xptest: Max work group  size : %d x %d x %d", maxWGSize [0], maxWGSize [1], maxWGSize [2]);
+    LOGI("xptest: Max work group  invocations (x*y*z) : %d", maxWGInvoc);
 
     // 获取图像尺寸
     int imageW, imageH, channels;
@@ -502,6 +544,7 @@ int main() {
     }
 
     // 加载图像
+    auto loadStart = steady_clock::now();
     GLuint imageTex = loadTextureFromPNG("assets/image.png", imageW, imageH);
     if (!imageTex) {
         LOGE("Failed to load image.png");
@@ -519,6 +562,8 @@ int main() {
         return -1;
     }
     LOGI("Loaded depth.exr: %dx%d", depthW, depthH);
+    auto loadTime = duration_cast<milliseconds>(steady_clock::now() - loadStart).count();
+    LOGI("xptest: Assets loaded in %lldms", loadTime);
 
     // 保存深度图为PNG用于调试
     saveDepthGrayPNG(depthTex, depthW, depthH, "depth.png");
@@ -531,12 +576,10 @@ int main() {
 
     // 全局尺寸
     const int TILE_W = 256;
-    int numTile = (imageW + TILE_W - 1) / TILE_W;
-    int edgeW = numTile * 2;
 
     // 创建目标纹理
-    GLuint leftColor, leftDepth, leftIndex, leftEdge;
-    GLuint rightColor, rightDepth, rightIndex, rightEdge;
+    GLuint leftColor, leftDepth, leftIndex;
+    GLuint rightColor, rightDepth, rightIndex;
 
     auto allocTex2D = [](GLuint &id, GLenum internalFmt, int w, int h) {
         glGenTextures(1, &id);
@@ -546,49 +589,36 @@ int main() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     };
 
-    auto makeTarget4 = [&](GLuint &color, GLuint &depth, GLuint &index, GLuint &edge) {
+    auto makeTarget3 = [&](GLuint &color, GLuint &depth, GLuint &index) {
         allocTex2D(color, GL_RGBA8,     imageW, imageH);
         allocTex2D(depth, GL_R32UI,     imageW, imageH);
         allocTex2D(index, GL_R32UI,     imageW, imageH);
-        allocTex2D(edge , GL_RGBA32UI,  edgeW , imageH);
 
-        /* --- 手动清零 -------------------------------------------------- */
-        std::vector<uint8_t>  clr0  (imageW * imageH * 4, 255);
-        std::vector<uint32_t> u32z  (imageW * imageH    , 0);
-        std::vector<uint32_t> u32ff (imageW * imageH    , 0xFFFFFFFFu);
-        std::vector<uint32_t> edge0 (edgeW  * imageH * 4, 0);
-
-        glBindTexture(GL_TEXTURE_2D, color);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, imageW, imageH,
-                        GL_RGBA,         GL_UNSIGNED_BYTE, clr0.data());
-
-        glBindTexture(GL_TEXTURE_2D, depth);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, imageW, imageH,
-                        GL_RED_INTEGER,  GL_UNSIGNED_INT,  u32z.data());
-
-        glBindTexture(GL_TEXTURE_2D, index);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, imageW, imageH,
-                        GL_RED_INTEGER,  GL_UNSIGNED_INT,  u32ff.data());
-
-        glBindTexture(GL_TEXTURE_2D, edge);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, edgeW, imageH,
-                        GL_RGBA_INTEGER, GL_UNSIGNED_INT, edge0.data());
+        /* --- 清零纹理 -------------------------------------------------- */
+        clearTextureRGBA8(color, 255, 255, 255, 255);   // 白色
+        clearTextureR32UI(depth, 0);                     // 0
+        clearTextureR32UI(index, 0xFFFFFFFFu);           // UNDEF
     };
 
     // 创建左右眼目标纹理
-    makeTarget4(leftColor, leftDepth, leftIndex, leftEdge);
-    makeTarget4(rightColor, rightDepth, rightIndex, rightEdge);
+    auto makeTargetStart = steady_clock::now();
+    makeTarget3(leftColor, leftDepth, leftIndex);
+    makeTarget3(rightColor, rightDepth, rightIndex);
+    auto makeTargetTime = duration_cast<milliseconds>(steady_clock::now() - makeTargetStart).count();
+    LOGI("xptest: Target textures created in %lldms", makeTargetTime);
 
     // 编译着色器
+    auto shaderStart = steady_clock::now();
     GLuint warpProg = createComputeProgram("shaders/warp_es.comp");
     loadFileTest("shaders/warp_es.comp");
     GLuint tileProg = createComputeProgram("shaders/fill_tile_es.comp");
     loadFileTest("shaders/fill_tile_es.comp");
     GLuint prefixProg = createComputeProgram("shaders/fill_prefix_es.comp");
     loadFileTest("shaders/fill_prefix_es.comp");
-    CHECK();
+    GLuint resetProg = createComputeProgram("shaders/reset_textures_es.comp");
+    loadFileTest("shaders/reset_textures_es.comp");
 
-    if (!warpProg || !tileProg || !prefixProg) {
+    if (!warpProg || !tileProg || !prefixProg || !resetProg) {
         LOGE("xptest: Failed to create compute programs");
         cleanupEGL();
         return -1;
@@ -606,10 +636,6 @@ int main() {
     tileU.orgHeight = glGetUniformLocation(tileProg, "orgHeight");
     tileU.eyeSign = glGetUniformLocation(tileProg, "eyeSign");
 
-    prefixU.orgWidth = glGetUniformLocation(prefixProg, "orgWidth");
-    prefixU.orgHeight = glGetUniformLocation(prefixProg, "orgHeight");
-    prefixU.numTile = glGetUniformLocation(prefixProg, "numTile");
-
     // 打印所有uniform位置 (-1表示未找到)
     LOGI("xptest: Warp uniform locations:");
     LOGI("xptest:   orgWidth=%d, orgHeight=%d, padSize=%d", warpU.orgWidth, warpU.orgHeight, warpU.padSize);
@@ -617,16 +643,13 @@ int main() {
     
     LOGI("xptest: Tile uniform locations:");
     LOGI("xptest:   orgWidth=%d, orgHeight=%d, eyeSign=%d", tileU.orgWidth, tileU.orgHeight, tileU.eyeSign);
-    
-    LOGI("xptest: Prefix uniform locations:");
-    LOGI("xptest:   orgWidth=%d, orgHeight=%d, numTile=%d", prefixU.orgWidth, prefixU.orgHeight, prefixU.numTile);
 
-    LOGI("xptest: Uniform locations cached successfully");
+    auto shaderTime = duration_cast<milliseconds>(steady_clock::now() - shaderStart).count();
+    LOGI("xptest: Shaders compiled and uniforms cached in %lldms", shaderTime);
 
     // 扭曲处理函数
     auto warpEye = [&](GLuint dstC, GLuint dstD, GLuint dstI, int eyeSign) {
         glUseProgram(warpProg);
-        CHECK();
         // 输入源纹理
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, imageTex);
@@ -661,22 +684,18 @@ int main() {
                  gx, gy, maxWGCount[0], maxWGCount[1]);
             return;
         }
-        CHECK();
         glDispatchCompute(gx, gy, 1);
         glMemoryBarrier(GL_ALL_BARRIER_BITS);
-        CHECK();
-        // 在warpEye后
-        LOGI("xptest: Warp dispatch completed: %u x %u work groups", gx, gy);
     };
 
     // 填充处理函数
-    auto fillEye = [&](GLuint color, GLuint index, GLuint edge, int eyeSign) {
-        int numTile = (imageW + 255) / 256;
+    auto fillEye = [&](GLuint color, GLuint index, int eyeSign) {
+        int numTile = (imageW + TILE_W - 1) / TILE_W;
         
         // 检查硬件上限
-        if ((GLuint)numTile > (GLuint)maxWGCount[0] || 256 > maxWGSize[0]) {
-            LOGE("xptest: Fill dispatch exceeds hardware limits: numTile=%d > %d or 256 > %d", 
-                 numTile, maxWGCount[0], maxWGSize[0]);
+        if ((GLuint)numTile > (GLuint)maxWGCount[0] || TILE_W > maxWGSize[0]) {
+            LOGE("xptest: Fill dispatch exceeds hardware limits: numTile=%d > %d or %d > %d", 
+                 numTile, maxWGCount[0], TILE_W, maxWGSize[0]);
             return;
         }
 
@@ -688,7 +707,6 @@ int main() {
         // 读（binding = 6）
         glBindImageTexture(6, color, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
         glBindImageTexture(4, index, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
-        glBindImageTexture(5, edge, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32UI);
 
         // 使用缓存的 uniform 位置
         glUniform1i(tileU.orgWidth, imageW);
@@ -697,41 +715,123 @@ int main() {
 
         glDispatchCompute(numTile, imageH, 1);
         glMemoryBarrier(GL_ALL_BARRIER_BITS);
-
-        // Pass-B-2: tile间前缀传播
-        glUseProgram(prefixProg);
-
-        glBindImageTexture(2, color, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-        glBindImageTexture(4, index, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
-        glBindImageTexture(5, edge, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32UI);
-
-        // 使用缓存的 uniform 位置
-        glUniform1i(prefixU.orgWidth, imageW);
-        glUniform1i(prefixU.orgHeight, imageH);
-        glUniform1i(prefixU.numTile, numTile);
-
-        glDispatchCompute(numTile, imageH, 1);
-        glMemoryBarrier(GL_ALL_BARRIER_BITS);
-
-        // 在fillEye中
-        LOGI("xptest: Fill dispatch: %d tiles", numTile);
     };
     saveTexturePNG(imageTex, imageW, imageH, "image.png");
 
-    // 执行扭曲
-    LOGI("xptest: Processing left eye...");
-    warpEye(leftColor, leftDepth, leftIndex, +1);
-    LOGI("xptest: Processing right eye...");
-    warpEye(rightColor, rightDepth, rightIndex, -1);
-    // 保存扭曲结果
-    saveTexturePNG(leftColor, imageW, imageH, "left_eye_warped.png");
-    saveTexturePNG(rightColor, imageW, imageH, "right_eye_warped.png");
+    // // 执行扭曲 - 先跑一次正常流程
+    // LOGI("xptest: Processing left eye...");
+    // warpEye(leftColor, leftDepth, leftIndex, +1);
+    // LOGI("xptest: Processing right eye...");
+    // warpEye(rightColor, rightDepth, rightIndex, -1);
+    // // 保存扭曲结果
+    // saveTexturePNG(leftColor, imageW, imageH, "left_eye_warped.png");
+    // saveTexturePNG(rightColor, imageW, imageH, "right_eye_warped.png");
 
-    // 执行填充
-    LOGI("xptest: Filling left eye...");
-    fillEye(leftColor, leftIndex, leftEdge, +1);
-    LOGI("xptest: Filling right eye...");
-    fillEye(rightColor, rightIndex, rightEdge, -1);
+    // // 执行填充 - 先跑一次正常流程
+    // LOGI("xptest: Filling left eye...");
+    // fillEye(leftColor, leftIndex, leftEdge, +1);
+    // LOGI("xptest: Filling right eye...");
+    // fillEye(rightColor, rightIndex, rightEdge, -1);
+
+
+    // 数据恢复函数
+    auto resetTargets = [&]() {
+        auto t0 = steady_clock::now();
+    
+        // ---------------- 左眼 ----------------
+        clearTextureRGBA8 (leftColor, 255,255,255,255);   // 白色
+        clearTextureR32UI (leftDepth, 0);                 // 0
+        clearTextureR32UI (leftIndex, 0xFFFFFFFFu);       // UNDEF
+    
+        // ---------------- 右眼 ----------------
+        clearTextureRGBA8 (rightColor, 255,255,255,255);
+        clearTextureR32UI (rightDepth, 0);
+        clearTextureR32UI (rightIndex, 0xFFFFFFFFu);
+    
+        auto us = duration_cast<microseconds>(steady_clock::now() - t0).count();
+        static bool first = true;
+        if (first) {
+            LOGI("xptest: Texture clear method: FBO+glClearBuffer, time: %.2f ms",
+                 us / 1000.0);
+            first = false;
+        }
+    };
+    // 数据恢复函数 - 使用 Compute Shader
+    // auto resetTargets = [&]() {
+    //     auto t0 = steady_clock::now();
+        
+    //     glUseProgram(resetProg);
+
+    //     /* ------- 把 8 张纹理按 shader 里写的 binding 号绑上 ------- */
+    //     // 左眼
+    //     glBindImageTexture(0, leftColor , 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8   );
+    //     glBindImageTexture(1, leftDepth , 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI   );
+    //     glBindImageTexture(2, leftIndex , 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI   );
+    //     glBindImageTexture(3, leftEdge  , 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32UI);
+    //     // 右眼
+    //     glBindImageTexture(4, rightColor, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8   );
+    //     glBindImageTexture(5, rightDepth, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI   );
+    //     glBindImageTexture(6, rightIndex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI   );
+    //     glBindImageTexture(7, rightEdge , 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32UI);
+
+    //     /* ------- 计算 dispatch 尺寸（取所有贴图里最大的宽高） ------- */
+    //     const int maxW = std::max(imageW, edgeW);      // edgeW 可能比 imageW 大
+    //     const int groupX = (maxW  + 31) / 32;
+    //     const int groupY = (imageH + 31) / 32;
+
+    //     glDispatchCompute(groupX, groupY, 1);
+
+    //     /* GPU 写 image → 后续 shader / 采样器可见 */
+    //     glMemoryBarrier(GL_ALL_BARRIER_BITS);
+        
+    //     auto us = duration_cast<microseconds>(steady_clock::now() - t0).count();
+    //     static bool first = true;
+    //     if (first) {
+    //         LOGI("xptest: Texture clear method: Compute Shader, time: %.2f ms",
+    //              us / 1000.0);
+    //         first = false;
+    //     }
+    // };
+
+    // 性能测试配置
+    const int TEST_ITERATIONS = 100;
+    
+    // 性能测试 - 完整流程(Warp+Fill)
+    LOGI("xptest: Starting complete pipeline performance test (%d iterations)...", TEST_ITERATIONS);
+    auto pipelineTestStart = steady_clock::now();
+    for (int i = 0; i < TEST_ITERATIONS; ++i)
+    {
+        auto iterStart = steady_clock::now();
+        
+        // ---------- 1. 扭曲 + 填充 ----------
+        warpEye (leftColor , leftDepth , leftIndex , +1);
+        warpEye (rightColor, rightDepth, rightIndex, -1);
+        fillEye (leftColor , leftIndex, +1);
+        fillEye (rightColor, rightIndex, -1);
+        
+    
+        // ---------- 3. 恢复数据 ----------
+        if (i < TEST_ITERATIONS-1)
+        {
+            resetTargets();
+        }
+        glFinish();
+        
+        // ---------- 4. 打印耗时 ----------
+        auto iterTime = duration_cast<microseconds>(steady_clock::now() - iterStart).count();
+        // 打印前10轮、中间10轮、后10轮的耗时，避免输出过多
+        bool shouldPrint = (i < 10) || 
+                          (i >= TEST_ITERATIONS/2 - 5 && i < TEST_ITERATIONS/2 + 5) || 
+                          (i >= TEST_ITERATIONS - 10);
+        
+        if (shouldPrint) {
+            LOGI("xptest: Iteration %d/%d: %.2f ms", i+1, TEST_ITERATIONS, iterTime / 1000.0);
+        } else if (i == 10) {
+            LOGI("xptest: ... (skipping middle iterations for brevity) ...");
+        }
+    }
+    auto pipelineAvgTime = duration_cast<microseconds>(steady_clock::now() - pipelineTestStart).count() / (double)TEST_ITERATIONS;
+    LOGI("xptest: Complete pipeline average time: %.2f ms ", pipelineAvgTime / 1000.0);
 
     // 保存最终结果
     saveTexturePNG(leftColor, imageW, imageH, "left_eye_result.png");
@@ -743,16 +843,16 @@ int main() {
     glDeleteTextures(1, &leftColor);
     glDeleteTextures(1, &leftDepth);
     glDeleteTextures(1, &leftIndex);
-    glDeleteTextures(1, &leftEdge);
     glDeleteTextures(1, &rightColor);
     glDeleteTextures(1, &rightDepth);
     glDeleteTextures(1, &rightIndex);
-    glDeleteTextures(1, &rightEdge);
     glDeleteProgram(warpProg);
     glDeleteProgram(tileProg);
     glDeleteProgram(prefixProg);
+    glDeleteProgram(resetProg);
 
     cleanupEGL();
-    LOGI("xptest: Processing completed successfully!");
+    auto totalTime = duration_cast<milliseconds>(steady_clock::now() - startTime).count();
+    LOGI("xptest: Processing completed successfully in %lldms total!", totalTime);
     return 0;
 } 

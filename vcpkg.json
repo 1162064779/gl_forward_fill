@@ -1,8 +1,6 @@
 {
   "name": "opengl-stereo-generator",
   "version": "1.0.0",
-  "description": "OpenGL Stereo Image Generator using depth maps",
-  "homepage": "https://github.com/your-username/opengl-stereo-generator",
   "dependencies": [
     {
       "name": "glfw3",

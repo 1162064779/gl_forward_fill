@@ -1,0 +1,50 @@
+#version 320 es
+layout(local_size_x = 32, local_size_y = 32) in;
+
+/* ---------- 左眼 ---------- */
+layout(binding = 0,  rgba8)    writeonly uniform highp image2D  uColorL;
+layout(binding = 1,  r32ui)    writeonly uniform highp uimage2D uDepthL;
+layout(binding = 2,  r32ui)    writeonly uniform highp uimage2D uIndexL;
+layout(binding = 3,  rgba32ui) writeonly uniform highp uimage2D uEdgeL;
+
+/* ---------- 右眼 ---------- */
+layout(binding = 4,  rgba8)    writeonly uniform highp image2D  uColorR;
+layout(binding = 5,  r32ui)    writeonly uniform highp uimage2D uDepthR;
+layout(binding = 6,  r32ui)    writeonly uniform highp uimage2D uIndexR;
+layout(binding = 7,  rgba32ui) writeonly uniform highp uimage2D uEdgeR;
+
+/* 要写入的常量 */
+const vec4  kWhiteF = vec4(1.0);          // RGBA8 : 255,255,255,255
+const uvec4 kZeroU  = uvec4(0u);          // R32UI / RGBA32UI : 0
+const uvec4 kUndefU = uvec4(0xFFFFFFFFu); // R32UI : UNDEF
+
+void main()
+{
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+
+    /* -------- 左眼 -------- */
+    if (p.x < imageSize(uColorL).x && p.y < imageSize(uColorL).y)
+        imageStore(uColorL, p, kWhiteF);
+
+    if (p.x < imageSize(uDepthL).x && p.y < imageSize(uDepthL).y)
+        imageStore(uDepthL, p, kZeroU);
+
+    if (p.x < imageSize(uIndexL).x && p.y < imageSize(uIndexL).y)
+        imageStore(uIndexL, p, kUndefU);
+
+    if (p.x < imageSize(uEdgeL).x && p.y < imageSize(uEdgeL).y)
+        imageStore(uEdgeL, p, kZeroU);
+
+    /* -------- 右眼 -------- */
+    if (p.x < imageSize(uColorR).x && p.y < imageSize(uColorR).y)
+        imageStore(uColorR, p, kWhiteF);
+
+    if (p.x < imageSize(uDepthR).x && p.y < imageSize(uDepthR).y)
+        imageStore(uDepthR, p, kZeroU);
+
+    if (p.x < imageSize(uIndexR).x && p.y < imageSize(uIndexR).y)
+        imageStore(uIndexR, p, kUndefU);
+
+    if (p.x < imageSize(uEdgeR).x && p.y < imageSize(uEdgeR).y)
+        imageStore(uEdgeR, p, kZeroU);
+}
