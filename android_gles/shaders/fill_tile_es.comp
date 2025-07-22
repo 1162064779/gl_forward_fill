@@ -21,7 +21,7 @@ const uint shift_len = 16u;
 //一些安卓机子上，这样的写法虽然可以通过编译，但是先执行了读操作，再执行写操作，会导致写操作失效。
 layout(binding = 6, rgba8) readonly  uniform highp image2D imgColorR; // 读
 layout(binding = 2, rgba8) writeonly uniform highp image2D imgColorW; // 写
-layout(binding = 4, r32ui)          uniform highp uimage2D imgIndex;  // 读+写
+layout(binding = 4, r32ui) uniform highp uimage2D imgIndex;  // 读+写
 
 // ------------------------------------------------------------
 uniform int orgWidth;
@@ -185,7 +185,7 @@ void main()
     if (inside)
     {
         imageStore(imgColorW, ivec2(int(col), int(y)), finalCol);
-        imageStore(imgIndex , ivec2(int(col), int(y)),
-                   uvec4(finalIdx, 0u, 0u, 0u));
+        // imageStore(imgIndex , ivec2(int(col), int(y)),
+        //            uvec4(finalIdx, 0u, 0u, 0u));
     }
 }

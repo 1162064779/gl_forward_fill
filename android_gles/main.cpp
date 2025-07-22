@@ -145,7 +145,7 @@ GLuint createComputeProgram(const char *path) {
 // 从PNG加载纹理
 GLuint loadTextureFromPNG(const char *path, int &width, int &height) {
     int channels;
-    unsigned char *data = stbi_load(path, &width, &height, &channels, 3);
+    unsigned char *data = stbi_load(path, &width, &height, &channels, 4);
     if (!data) {
         LOGE("Failed to load image: %s", path);
         return 0;
@@ -155,7 +155,7 @@ GLuint loadTextureFromPNG(const char *path, int &width, int &height) {
     glGenTextures(1, &texID);
     glBindTexture(GL_TEXTURE_2D, texID);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -287,6 +287,33 @@ void saveTexturePNG(GLuint tex, int w, int h, const char *name) {
     
     stbi_write_png(name, w, h, 3, rgb_buf.data(), w * 3);
     LOGI("Saved texture to: %s", name);
+}
+
+// 保存RGBA纹理为PNG - 保留Alpha通道
+void saveRGBATexturePNG(GLuint tex, int w, int h, const char *name) {
+    // 创建FBO来读取纹理
+    GLuint fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        LOGE("FBO incomplete: 0x%04X", st);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        return;
+    }
+    
+    // 读取RGBA格式
+    std::vector<unsigned char> rgba_buf(w * h * 4);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba_buf.data());
+    
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    
+    // 直接保存RGBA数据
+    stbi_write_png(name, w, h, 4, rgba_buf.data(), w * 4);
+    LOGI("Saved RGBA texture to: %s", name);
 }
 
 // 保存深度图为灰度PNG - 使用FBO读取纹理
@@ -442,49 +469,49 @@ std::string loadFileTest(const char *path)
 inline void clearTextureRGBA8 (GLuint tex, uint8_t  r, uint8_t  g,
     uint8_t  b, uint8_t  a = 0)
 {
-static GLuint sFBO = 0;
-if (!sFBO) glGenFramebuffers(1, &sFBO);
+    static GLuint sFBO = 0;
+    if (!sFBO) glGenFramebuffers(1, &sFBO);
 
-const GLfloat v[4] = { r / 255.f, g / 255.f, b / 255.f, a / 255.f };
+    const GLfloat v[4] = { r / 255.f, g / 255.f, b / 255.f, a / 255.f };
 
-glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
-glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-GL_TEXTURE_2D, tex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+    GL_TEXTURE_2D, tex, 0);
 
-glClearBufferfv(GL_COLOR, 0, v);
-glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glClearBufferfv(GL_COLOR, 0, v);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 inline void clearTextureR32UI(GLuint tex, uint32_t value)
 {
-static GLuint sFBO = 0;
-if (!sFBO) glGenFramebuffers(1, &sFBO);
+    static GLuint sFBO = 0;
+    if (!sFBO) glGenFramebuffers(1, &sFBO);
 
-const GLuint v[4] = { value, 0u, 0u, 0u };
+    const GLuint v[4] = { value, 0u, 0u, 0u };
 
-glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
-glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-GL_TEXTURE_2D, tex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+    GL_TEXTURE_2D, tex, 0);
 
-glClearBufferuiv(GL_COLOR, 0, v);
-glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glClearBufferuiv(GL_COLOR, 0, v);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 inline void clearTextureRGBA32UI(GLuint tex,
       uint32_t r, uint32_t g,
       uint32_t b, uint32_t a = 0)
 {
-static GLuint sFBO = 0;
-if (!sFBO) glGenFramebuffers(1, &sFBO);
+    static GLuint sFBO = 0;
+    if (!sFBO) glGenFramebuffers(1, &sFBO);
 
-const GLuint v[4] = { r, g, b, a };
+    const GLuint v[4] = { r, g, b, a };
 
-glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
-glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-GL_TEXTURE_2D, tex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, sFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+    GL_TEXTURE_2D, tex, 0);
 
-glClearBufferuiv(GL_COLOR, 0, v);
-glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glClearBufferuiv(GL_COLOR, 0, v);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 // 主函数
@@ -533,7 +560,7 @@ int main() {
 
     // 获取图像尺寸
     int imageW, imageH, channels;
-    unsigned char *info_data = stbi_load("assets/image.png", &imageW, &imageH, &channels, 0);
+    unsigned char *info_data = stbi_load("assets/rgb_depth.png", &imageW, &imageH, &channels, 0);
     if (info_data) {
         windowWidth = imageW;
         windowHeight = imageH;
@@ -545,28 +572,28 @@ int main() {
 
     // 加载图像
     auto loadStart = steady_clock::now();
-    GLuint imageTex = loadTextureFromPNG("assets/image.png", imageW, imageH);
+    GLuint imageTex = loadTextureFromPNG("assets/rgb_depth.png", imageW, imageH);
     if (!imageTex) {
-        LOGE("Failed to load image.png");
+        LOGE("Failed to load rgb_depth.png");
         cleanupEGL();
         return -1;
     }
-    LOGI("Loaded image.png: %dx%d", imageW, imageH);
+    LOGI("Loaded rgb_depth.png: %dx%d", imageW, imageH);
 
-    // 加载深度图
-    int depthW, depthH;
-    GLuint depthTex = loadDepthFromEXR("assets/depth.exr", depthW, depthH);
-    if (!depthTex) {
-        LOGE("Failed to load depth.exr");
-        cleanupEGL();
-        return -1;
-    }
-    LOGI("Loaded depth.exr: %dx%d", depthW, depthH);
-    auto loadTime = duration_cast<milliseconds>(steady_clock::now() - loadStart).count();
-    LOGI("xptest: Assets loaded in %lldms", loadTime);
+    // // 加载深度图
+    // int depthW, depthH;
+    // GLuint depthTex = loadDepthFromEXR("assets/depth.exr", depthW, depthH);
+    // if (!depthTex) {
+    //     LOGE("Failed to load depth.exr");
+    //     cleanupEGL();
+    //     return -1;
+    // }
+    // LOGI("Loaded depth.exr: %dx%d", depthW, depthH);
+    // auto loadTime = duration_cast<milliseconds>(steady_clock::now() - loadStart).count();
+    // LOGI("xptest: Assets loaded in %lldms", loadTime);
 
-    // 保存深度图为PNG用于调试
-    saveDepthGrayPNG(depthTex, depthW, depthH, "depth.png");
+    // // 保存深度图为PNG用于调试
+    // saveDepthGrayPNG(depthTex, depthW, depthH, "depth.png");
 
     // 立体参数
     const float divergence = 2.0f;
@@ -613,12 +640,17 @@ int main() {
     loadFileTest("shaders/warp_es.comp");
     GLuint tileProg = createComputeProgram("shaders/fill_tile_es.comp");
     loadFileTest("shaders/fill_tile_es.comp");
-    GLuint prefixProg = createComputeProgram("shaders/fill_prefix_es.comp");
-    loadFileTest("shaders/fill_prefix_es.comp");
-    GLuint resetProg = createComputeProgram("shaders/reset_textures_es.comp");
-    loadFileTest("shaders/reset_textures_es.comp");
+    // GLuint prefixProg = createComputeProgram("shaders/fill_prefix_es.comp");
+    // loadFileTest("shaders/fill_prefix_es.comp");
+    // GLuint resetProg = createComputeProgram("shaders/reset_textures_es.comp");
+    // loadFileTest("shaders/reset_textures_es.comp");
 
-    if (!warpProg || !tileProg || !prefixProg || !resetProg) {
+    // if (!warpProg || !tileProg || !prefixProg || !resetProg) {
+    //     LOGE("xptest: Failed to create compute programs");
+    //     cleanupEGL();
+    //     return -1;
+    // }
+    if (!warpProg || !tileProg) {
         LOGE("xptest: Failed to create compute programs");
         cleanupEGL();
         return -1;
@@ -655,9 +687,9 @@ int main() {
         glBindTexture(GL_TEXTURE_2D, imageTex);
         glUniform1i(glGetUniformLocation(warpProg, "srcColor"), 0); 
 
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, depthTex);
-        glUniform1i(glGetUniformLocation(warpProg, "srcDepth"), 1); 
+        // glActiveTexture(GL_TEXTURE1);
+        // glBindTexture(GL_TEXTURE_2D, depthTex);
+        // glUniform1i(glGetUniformLocation(warpProg, "srcDepth"), 1); 
 
         // 输出绑定
         glBindImageTexture(2, dstC, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
@@ -718,33 +750,17 @@ int main() {
     };
     saveTexturePNG(imageTex, imageW, imageH, "image.png");
 
-    // // 执行扭曲 - 先跑一次正常流程
-    // LOGI("xptest: Processing left eye...");
-    // warpEye(leftColor, leftDepth, leftIndex, +1);
-    // LOGI("xptest: Processing right eye...");
-    // warpEye(rightColor, rightDepth, rightIndex, -1);
-    // // 保存扭曲结果
-    // saveTexturePNG(leftColor, imageW, imageH, "left_eye_warped.png");
-    // saveTexturePNG(rightColor, imageW, imageH, "right_eye_warped.png");
-
-    // // 执行填充 - 先跑一次正常流程
-    // LOGI("xptest: Filling left eye...");
-    // fillEye(leftColor, leftIndex, leftEdge, +1);
-    // LOGI("xptest: Filling right eye...");
-    // fillEye(rightColor, rightIndex, rightEdge, -1);
-
-
     // 数据恢复函数
     auto resetTargets = [&]() {
         auto t0 = steady_clock::now();
     
         // ---------------- 左眼 ----------------
-        clearTextureRGBA8 (leftColor, 255,255,255,255);   // 白色
+        clearTextureRGBA8 (leftColor, 255,0,0,255);   // 白色
         clearTextureR32UI (leftDepth, 0);                 // 0
         clearTextureR32UI (leftIndex, 0xFFFFFFFFu);       // UNDEF
     
         // ---------------- 右眼 ----------------
-        clearTextureRGBA8 (rightColor, 255,255,255,255);
+        clearTextureRGBA8 (rightColor, 255,0,0,255);
         clearTextureR32UI (rightDepth, 0);
         clearTextureR32UI (rightIndex, 0xFFFFFFFFu);
     
@@ -752,10 +768,29 @@ int main() {
         static bool first = true;
         if (first) {
             LOGI("xptest: Texture clear method: FBO+glClearBuffer, time: %.2f ms",
-                 us / 1000.0);
+                    us / 1000.0);
             first = false;
         }
     };
+    // 执行扭曲 - 先跑一次正常流程
+    LOGI("xptest: Processing left eye...");
+    warpEye(leftColor, leftDepth, leftIndex, +1);
+    LOGI("xptest: Processing right eye...");
+    warpEye(rightColor, rightDepth, rightIndex, -1);
+    // 保存扭曲结果
+    saveTexturePNG(leftColor, imageW, imageH, "left_eye_warped.png");
+    saveTexturePNG(rightColor, imageW, imageH, "right_eye_warped.png");
+
+    // 执行填充 - 先跑一次正常流程
+    LOGI("xptest: Filling left eye...");
+    fillEye(leftColor, leftIndex, +1);
+    LOGI("xptest: Filling right eye...");
+    fillEye(rightColor, rightIndex, -1);
+    saveTexturePNG(leftColor, imageW, imageH, "left_eye_filled.png");
+    saveTexturePNG(rightColor, imageW, imageH, "right_eye_filled.png");
+    resetTargets();
+    glFinish();
+
     // 数据恢复函数 - 使用 Compute Shader
     // auto resetTargets = [&]() {
     //     auto t0 = steady_clock::now();
@@ -839,7 +874,7 @@ int main() {
 
     // 清理资源
     glDeleteTextures(1, &imageTex);
-    glDeleteTextures(1, &depthTex);
+    // glDeleteTextures(1, &depthTex);
     glDeleteTextures(1, &leftColor);
     glDeleteTextures(1, &leftDepth);
     glDeleteTextures(1, &leftIndex);
@@ -848,8 +883,8 @@ int main() {
     glDeleteTextures(1, &rightIndex);
     glDeleteProgram(warpProg);
     glDeleteProgram(tileProg);
-    glDeleteProgram(prefixProg);
-    glDeleteProgram(resetProg);
+    // glDeleteProgram(prefixProg);
+    // glDeleteProgram(resetProg);
 
     cleanupEGL();
     auto totalTime = duration_cast<milliseconds>(steady_clock::now() - startTime).count();
