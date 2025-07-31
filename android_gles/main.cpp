@@ -560,7 +560,7 @@ int main() {
 
     // 获取图像尺寸
     int imageW, imageH, channels;
-    unsigned char *info_data = stbi_load("assets/rgb_depth.png", &imageW, &imageH, &channels, 0);
+    unsigned char *info_data = stbi_load("assets/sbs_depth.png", &imageW, &imageH, &channels, 0);
     if (info_data) {
         windowWidth = imageW;
         windowHeight = imageH;
@@ -572,13 +572,14 @@ int main() {
 
     // 加载图像
     auto loadStart = steady_clock::now();
-    GLuint imageTex = loadTextureFromPNG("assets/rgb_depth.png", imageW, imageH);
+    GLuint imageTex = loadTextureFromPNG("assets/sbs_depth.png", imageW, imageH);
     if (!imageTex) {
-        LOGE("Failed to load rgb_depth.png");
+        LOGE("Failed to load sbs_depth.png");
         cleanupEGL();
         return -1;
     }
-    LOGI("Loaded rgb_depth.png: %dx%d", imageW, imageH);
+    LOGI("Loaded sbs_depth.png: %dx%d", imageW, imageH);
+    imageW = imageW / 2;
 
     // // 加载深度图
     // int depthW, depthH;

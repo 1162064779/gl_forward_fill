@@ -80,7 +80,7 @@ void main()
 
    /* ④ texelFetch 在 ES 3.1+ 依然可用，语义与桌面相同 */
    vec4  C = texelFetch(srcColor, ivec2(srcX, gid.y), 0);
-   float Z = C.a;                       /* ⑤ 深度直接取自 α 通道 */
+   float Z = texelFetch(srcColor, ivec2(srcX + orgWidth, gid.y), 0).r;
 
    /* --- 平移量 (disp) 计算 --- */
    float disp   = Z * shiftScale + shiftBias;
