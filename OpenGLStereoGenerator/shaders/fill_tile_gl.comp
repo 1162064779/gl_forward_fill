@@ -1,0 +1,115 @@
+#version 430
+
+layout(local_size_x = 256) in;
+const uint TILE = 256u;
+const uint shift_len = 256u;
+
+layout(binding = 6, rgba8) readonly  uniform image2D  imgColorR;
+layout(binding = 2, rgba8) writeonly uniform image2D  imgColorW;
+layout(binding = 4, r32ui)          uniform uimage2D imgIndex;
+
+uniform int orgWidth;
+uniform int orgHeight;
+uniform int eyeSign;
+
+const uint UUNDEF   = 0xFFFFFFFFu;
+const uint INF_DIST = 0xFFFFu;
+
+shared vec4 sColorL[TILE], sColorR[TILE];
+shared uint sIndexL[TILE], sIndexR[TILE];
+shared uint sDistL[TILE],  sDistR[TILE];
+
+void propagateLeft(int W, int shift_w)
+{
+    for (int stride = 1; stride < shift_w; stride <<= 1)
+    {
+        uint x = gl_LocalInvocationID.x;
+        if (x >= uint(stride) && sIndexL[x] == UUNDEF)
+        {
+            uint srcIdx  = sIndexL[x - uint(stride)];
+            if (srcIdx != UUNDEF)
+            {
+                uint candDist = sDistL[x - uint(stride)] + uint(stride);
+                if (candDist < sDistL[x])
+                {
+                    sIndexL[x] = srcIdx;
+                    sColorL[x] = sColorL[x - uint(stride)];
+                    sDistL [x] = candDist;
+                }
+            }
+        }
+        barrier();
+    }
+}
+
+void propagateRight(int W, int shift_w)
+{
+    for (int stride = 1; stride < shift_w; stride <<= 1)
+    {
+        uint x = gl_LocalInvocationID.x;
+        if (x + uint(stride) < uint(W) && sIndexR[x] == UUNDEF)
+        {
+            uint srcIdx  = sIndexR[x + uint(stride)];
+            if (srcIdx != UUNDEF)
+            {
+                uint candDist = sDistR[x + uint(stride)] + uint(stride);
+                if (candDist < sDistR[x])
+                {
+                    sIndexR[x] = srcIdx;
+                    sColorR[x] = sColorR[x + uint(stride)];
+                    sDistR [x] = candDist;
+                }
+            }
+        }
+        barrier();
+    }
+}
+
+void main()
+{
+    uint xLocal = gl_LocalInvocationID.x;
+    uint y      = gl_WorkGroupID.y;
+    if (y >= uint(orgHeight)) return;
+
+    uint tileX  = gl_WorkGroupID.x * TILE;
+    uint col    = tileX + xLocal;
+    bool inside = col < uint(orgWidth);
+
+    vec4  C = vec4(0.0);
+    uint  I = UUNDEF;
+
+    if (inside)
+    {
+        C = imageLoad(imgColorR, ivec2(int(col), int(y)));
+        I = imageLoad(imgIndex , ivec2(int(col), int(y))).x;
+    }
+
+    sColorL[xLocal] = C;  sColorR[xLocal] = C;
+    sIndexL[xLocal] = I;  sIndexR[xLocal] = I;
+    sDistL [xLocal] = (I != UUNDEF) ? 0u : INF_DIST;
+    sDistR [xLocal] = (I != UUNDEF) ? 0u : INF_DIST;
+    barrier();
+
+    int W = min(int(TILE), orgWidth - int(tileX));
+    int shift_w = min(int(shift_len), orgWidth - int(tileX));
+
+    propagateRight(W, shift_w);
+    propagateLeft (W, shift_w);
+
+    uint finalIdx;
+    vec4 finalCol;
+    if (sDistR[xLocal] <= sDistL[xLocal]) {
+        finalIdx = sIndexR[xLocal];
+        finalCol = sColorR[xLocal];
+    } else {
+        finalIdx = sIndexL[xLocal];
+        finalCol = sColorL[xLocal];
+    }
+
+    if (inside)
+    {
+        imageStore(imgColorW, ivec2(int(col), int(y)), finalCol);
+        // 如需输出索引，取消下一行注释
+        // imageStore(imgIndex , ivec2(int(col), int(y)), uvec4(finalIdx, 0u, 0u, 0u));
+    }
+}

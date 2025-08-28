@@ -42,8 +42,8 @@ int windowHeight = 1080;
 
 // Uniform位置缓存结构体
 struct WarpUniforms {
-    GLint orgWidth, orgHeight, padSize, paddedWidth;
-    GLint shiftScale, shiftBias;
+    GLint orgWidth, orgHeight, padSizeX, padSizeY, paddedWidth, paddedHeight;
+    GLint shiftScaleX, shiftBiasX, shiftScaleY, shiftBiasY;
 } warpU;
 
 struct TileUniforms {
@@ -560,7 +560,7 @@ int main() {
 
     // 获取图像尺寸
     int imageW, imageH, channels;
-    unsigned char *info_data = stbi_load("assets/sbs_depth.png", &imageW, &imageH, &channels, 0);
+    unsigned char *info_data = stbi_load("assets/avengers_sbs_d.png", &imageW, &imageH, &channels, 0);
     if (info_data) {
         windowWidth = imageW;
         windowHeight = imageH;
@@ -572,13 +572,13 @@ int main() {
 
     // 加载图像
     auto loadStart = steady_clock::now();
-    GLuint imageTex = loadTextureFromPNG("assets/sbs_depth.png", imageW, imageH);
+    GLuint imageTex = loadTextureFromPNG("assets/avengers_sbs_d.png", imageW, imageH);
     if (!imageTex) {
-        LOGE("Failed to load sbs_depth.png");
+        LOGE("Failed to load avengers_sbs_d.png");
         cleanupEGL();
         return -1;
     }
-    LOGI("Loaded sbs_depth.png: %dx%d", imageW, imageH);
+    LOGI("Loaded avengers_sbs_d.png: %dx%d", imageW, imageH);
     imageW = imageW / 2;
 
     // // 加载深度图
@@ -599,8 +599,10 @@ int main() {
     // 立体参数
     const float divergence = 2.0f;
     const float convergence = 0.0f;
-    int padSize = int(imageW * divergence * 0.01f + 2);
-    int paddedW = imageW + padSize * 2;
+    int padSizeX = int(imageW * divergence * 0.01f + 2);
+    int padSizeY = int(imageH * divergence * 0.01f + 2);
+    int paddedW = imageW + padSizeX * 2;
+    int paddedH = imageH + padSizeY * 2;
 
     // 全局尺寸
     const int TILE_W = 256;
@@ -660,10 +662,14 @@ int main() {
     // 缓存 uniform 位置
     warpU.orgWidth = glGetUniformLocation(warpProg, "orgWidth");
     warpU.orgHeight = glGetUniformLocation(warpProg, "orgHeight");
-    warpU.padSize = glGetUniformLocation(warpProg, "padSize");
+    warpU.padSizeX = glGetUniformLocation(warpProg, "padSizeX");
+    warpU.padSizeY = glGetUniformLocation(warpProg, "padSizeY");
     warpU.paddedWidth = glGetUniformLocation(warpProg, "paddedWidth");
-    warpU.shiftScale = glGetUniformLocation(warpProg, "shiftScale");
-    warpU.shiftBias = glGetUniformLocation(warpProg, "shiftBias");
+    warpU.paddedHeight = glGetUniformLocation(warpProg, "paddedHeight");
+    warpU.shiftScaleX = glGetUniformLocation(warpProg, "shiftScaleX");
+    warpU.shiftBiasX = glGetUniformLocation(warpProg, "shiftBiasX");
+    warpU.shiftScaleY = glGetUniformLocation(warpProg, "shiftScaleY");
+    warpU.shiftBiasY = glGetUniformLocation(warpProg, "shiftBiasY");
 
     tileU.orgWidth = glGetUniformLocation(tileProg, "orgWidth");
     tileU.orgHeight = glGetUniformLocation(tileProg, "orgHeight");
@@ -671,8 +677,9 @@ int main() {
 
     // 打印所有uniform位置 (-1表示未找到)
     LOGI("xptest: Warp uniform locations:");
-    LOGI("xptest:   orgWidth=%d, orgHeight=%d, padSize=%d", warpU.orgWidth, warpU.orgHeight, warpU.padSize);
-    LOGI("xptest:   paddedWidth=%d, shiftScale=%d, shiftBias=%d", warpU.paddedWidth, warpU.shiftScale, warpU.shiftBias);
+    LOGI("xptest:   orgWidth=%d, orgHeight=%d, padSizeX=%d, padSizeY=%d", warpU.orgWidth, warpU.orgHeight, warpU.padSizeX, warpU.padSizeY);
+    LOGI("xptest:   paddedWidth=%d, paddedHeight=%d", warpU.paddedWidth, warpU.paddedHeight);
+    LOGI("xptest:   shiftScaleX=%d, shiftBiasX=%d, shiftScaleY=%d, shiftBiasY=%d", warpU.shiftScaleX, warpU.shiftBiasX, warpU.shiftScaleY, warpU.shiftBiasY);
     
     LOGI("xptest: Tile uniform locations:");
     LOGI("xptest:   orgWidth=%d, orgHeight=%d, eyeSign=%d", tileU.orgWidth, tileU.orgHeight, tileU.eyeSign);
@@ -681,7 +688,7 @@ int main() {
     LOGI("xptest: Shaders compiled and uniforms cached in %lldms", shaderTime);
 
     // 扭曲处理函数
-    auto warpEye = [&](GLuint dstC, GLuint dstD, GLuint dstI, int eyeSign) {
+    auto warpEye = [&](GLuint dstC, GLuint dstD, GLuint dstI, float xScale, float yScale) {
         glUseProgram(warpProg);
         // 输入源纹理
         glActiveTexture(GL_TEXTURE0);
@@ -698,19 +705,25 @@ int main() {
         glBindImageTexture(4, dstI, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
 
         // 参数 - 使用缓存的 uniform 位置
-        float shiftScale = divergence * 0.01f * imageW * 0.5f * eyeSign;
-        float shiftBias = -convergence * shiftScale;
+        float shiftScaleX = divergence * 0.01f * imageW * 0.5f * xScale;
+        float shiftBiasX = -convergence * shiftScaleX;
+        float shiftScaleY = divergence * 0.01f * imageH * 0.5f * yScale;
+        float shiftBiasY = -convergence * shiftScaleY;
 
         glUniform1i(warpU.orgWidth, imageW);
         glUniform1i(warpU.orgHeight, imageH);
-        glUniform1i(warpU.padSize, padSize);
+        glUniform1i(warpU.padSizeX, padSizeX);
+        glUniform1i(warpU.padSizeY, padSizeY);
         glUniform1i(warpU.paddedWidth, paddedW);
-        glUniform1f(warpU.shiftScale, shiftScale);
-        glUniform1f(warpU.shiftBias, shiftBias);
+        glUniform1i(warpU.paddedHeight, paddedH);
+        glUniform1f(warpU.shiftScaleX, shiftScaleX);
+        glUniform1f(warpU.shiftBiasX, shiftBiasX);
+        glUniform1f(warpU.shiftScaleY, shiftScaleY);
+        glUniform1f(warpU.shiftBiasY, shiftBiasY);
 
         // Dispatch - 检查硬件上限
         GLuint gx = (paddedW + 15) / 16;
-        GLuint gy = (imageH + 15) / 16;
+        GLuint gy = (paddedH + 15) / 16;
         
         if (gx > (GLuint)maxWGCount[0] || gy > (GLuint)maxWGCount[1]) {
             LOGE("xptest: Work group count exceeds hardware limits: %u x %u > %d x %d", 
@@ -773,11 +786,13 @@ int main() {
             first = false;
         }
     };
+    float xScale = 10.0f;
+    float yScale = 5.0f;
     // 执行扭曲 - 先跑一次正常流程
     LOGI("xptest: Processing left eye...");
-    warpEye(leftColor, leftDepth, leftIndex, +1);
+    warpEye(leftColor, leftDepth, leftIndex, xScale, yScale);
     LOGI("xptest: Processing right eye...");
-    warpEye(rightColor, rightDepth, rightIndex, -1);
+    warpEye(rightColor, rightDepth, rightIndex, xScale-2.0f, yScale);
     // 保存扭曲结果
     saveTexturePNG(leftColor, imageW, imageH, "left_eye_warped.png");
     saveTexturePNG(rightColor, imageW, imageH, "right_eye_warped.png");
@@ -840,8 +855,8 @@ int main() {
         auto iterStart = steady_clock::now();
         
         // ---------- 1. 扭曲 + 填充 ----------
-        warpEye (leftColor , leftDepth , leftIndex , +1);
-        warpEye (rightColor, rightDepth, rightIndex, -1);
+        warpEye (leftColor , leftDepth , leftIndex , xScale, yScale);
+        warpEye (rightColor, rightDepth, rightIndex, xScale-2.0f, yScale);
         fillEye (leftColor , leftIndex, +1);
         fillEye (rightColor, rightIndex, -1);
         

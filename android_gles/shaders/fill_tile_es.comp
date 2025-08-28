@@ -11,7 +11,7 @@ precision highp uint;
 // ------------------------------------------------------------
 layout(local_size_x = 256) in;
 const uint TILE   = 256u;  // ← 变成 uint   // = local_size_x
-const uint shift_len = 16u;
+const uint shift_len = 256u;
 
 // ------------------------------------------------------------
 // image 绑定

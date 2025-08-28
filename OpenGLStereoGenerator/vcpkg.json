@@ -1,0 +1,12 @@
+{
+  "name": "opengl-stereo-generator",
+  "version-semver": "0.2.0",
+  "description": "Desktop OpenGL 4.3 compute (GLFW + GLAD) sample with stb",
+  "builtin-baseline": "3426db05b996481ca31e95fff3734cf23e0f51bc",
+  "dependencies": [
+    "glfw3",
+    "glad",
+    "stb",
+    "opengl"
+  ]
+}
