@@ -1,0 +1,68 @@
+#version 320 es
+precision highp float;
+precision highp int;
+precision highp uint;
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+/* ---------- 输入纹理 ---------- */
+layout(binding = 0) uniform highp sampler2D srcColor;
+
+/* ---------- 输出 image ---------- */
+/* 这里只用深度，写为 R32UI，原子 max */
+layout(binding = 3, r32ui) coherent uniform highp uimage2D dstDepth;
+
+/* ---------- 公共参数 ---------- */
+uniform int   orgWidth,  orgHeight;
+uniform int   padSizeX,  padSizeY;
+uniform int   paddedWidth, paddedHeight;
+uniform float shiftScaleX, shiftBiasX;
+uniform float shiftScaleY, shiftBiasY;
+
+/* ---------- 工具 ---------- */
+uint encodeDepth(float d) { return uint(clamp(d, 0.0, 1.0) * 255.0); }
+
+/* ---------- 仅写深度 ---------- */
+void tryWriteDepth(ivec2 paddedPos, uint dEnc)
+{
+    bool inside =
+         paddedPos.x >= padSizeX &&
+         paddedPos.x <  padSizeX + orgWidth &&
+         paddedPos.y >= padSizeY &&
+         paddedPos.y <  padSizeY + orgHeight;
+    if (!inside) return;
+
+    ivec2 dstPos = ivec2(paddedPos.x - padSizeX,
+                         paddedPos.y - padSizeY);
+
+    imageAtomicMax(dstDepth, dstPos, dEnc);   // 只比大小
+}
+
+/* ---------- 主函数 ---------- */
+void main()
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= paddedWidth || gid.y >= paddedHeight) return;
+
+    int srcX = clamp(gid.x - padSizeX, 0, orgWidth  - 1);
+    int srcY = clamp(gid.y - padSizeY, 0, orgHeight - 1);
+
+    float Z = texelFetch(srcColor, ivec2(srcX + orgWidth, srcY), 0).r;
+
+    float dispX = Z * shiftScaleX + shiftBiasX;
+    float dispY = Z * shiftScaleY + shiftBiasY;
+    float xPrime = float(gid.x) + dispX;
+    float yPrime = float(gid.y) + dispY;
+
+    int   xFloor = int(floor(xPrime));
+    int   yFloor = int(floor(yPrime));
+    float fracX  = fract(xPrime);
+    float fracY  = fract(yPrime);
+
+    uint dEnc = encodeDepth(Z);
+
+    tryWriteDepth(ivec2(xFloor    , yFloor    ), dEnc);
+    if (fracX > 0.001)                  tryWriteDepth(ivec2(xFloor + 1, yFloor    ), dEnc);
+    if (fracY > 0.001)                  tryWriteDepth(ivec2(xFloor    , yFloor + 1), dEnc);
+    if (fracX > 0.001 && fracY > 0.001) tryWriteDepth(ivec2(xFloor + 1, yFloor + 1), dEnc);
+}

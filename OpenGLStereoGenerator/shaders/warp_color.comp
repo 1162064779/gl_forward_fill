@@ -1,0 +1,75 @@
+#version 430
+/*---------------------------------------
+  Pass-2 : 与 dstDepth 比较后写颜色/索引
+---------------------------------------*/
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+/* ---------- 资源绑定 ---------- */
+layout(binding = 0)           uniform sampler2D  srcColor;
+layout(binding = 2, rgba8)    writeonly uniform image2D  dstColor;
+layout(binding = 3, r32ui)    readonly  uniform uimage2D dstDepth;
+layout(binding = 4, r32ui)    writeonly uniform uimage2D dstIndex;
+
+/* ---------- 常量 ---------- */
+uniform int   orgWidth,  orgHeight;
+uniform int   padSizeX,  padSizeY;
+uniform int   paddedWidth, paddedHeight;
+uniform float shiftScaleX, shiftBiasX;
+uniform float shiftScaleY, shiftBiasY;
+
+/* ---------- 工具函数 ---------- */
+uint encodeDepth(float d)
+{
+    return uint(clamp(d, 0.0, 1.0) * 255.0);
+}
+
+/* ---------- 写颜色 ---------- */
+void tryWriteColor(ivec2 paddedPos, vec4 c, uint dEnc, uint idx)
+{
+    bool inside =
+         paddedPos.x >= padSizeX && paddedPos.x < padSizeX + orgWidth &&
+         paddedPos.y >= padSizeY && paddedPos.y < padSizeY + orgHeight;
+    if (!inside) return;
+
+    ivec2 dstPos = ivec2(paddedPos.x - padSizeX,
+                         paddedPos.y - padSizeY);
+
+    /* 只有深度完全匹配时才写，已无并发冲突 */
+    if (dEnc == imageLoad(dstDepth, dstPos).r)
+    {
+        imageStore(dstColor, dstPos, vec4(c.rgb, 1.0));
+        imageStore(dstIndex, dstPos, uvec4(idx, 0u, 0u, 0u));
+    }
+}
+
+/* ---------- 主函数 ---------- */
+void main()
+{
+    uvec2 gid = gl_GlobalInvocationID.xy;
+    if (gid.x >= uint(paddedWidth) || gid.y >= uint(paddedHeight)) return;
+
+    int srcX = clamp(int(gid.x) - padSizeX, 0, orgWidth  - 1);
+    int srcY = clamp(int(gid.y) - padSizeY, 0, orgHeight - 1);
+
+    vec4  C = texelFetch(srcColor, ivec2(srcX, srcY), 0);
+    float Z = texelFetch(srcColor, ivec2(srcX + orgWidth, srcY), 0).r;
+
+    float dispX = Z * shiftScaleX + shiftBiasX;
+    float dispY = Z * shiftScaleY + shiftBiasY;
+    float xPrime = float(gid.x) + dispX;
+    float yPrime = float(gid.y) + dispY;
+
+    int   xFloor = int(floor(xPrime));
+    int   yFloor = int(floor(yPrime));
+    float fracX  = fract(xPrime);
+    float fracY  = fract(yPrime);
+
+    uint dEnc = encodeDepth(Z);
+    uint idx  = uint(srcY) * uint(orgWidth) + uint(srcX);
+
+    tryWriteColor(ivec2(xFloor    , yFloor    ), C, dEnc, idx);
+    if (fracX > 0.001)                  tryWriteColor(ivec2(xFloor + 1, yFloor    ), C, dEnc, idx);
+    if (fracY > 0.001)                  tryWriteColor(ivec2(xFloor    , yFloor + 1), C, dEnc, idx);
+    if (fracX > 0.001 && fracY > 0.001) tryWriteColor(ivec2(xFloor + 1, yFloor + 1), C, dEnc, idx);
+}
